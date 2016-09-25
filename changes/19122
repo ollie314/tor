@@ -1,3 +1,0 @@
-  o Minor bugfixes (documentation):
-    - man page incorrectly states the User option takes a UID when it really
-      takes a username. Fixes bug 19122.
