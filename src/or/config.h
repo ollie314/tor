@@ -76,6 +76,8 @@ MOCK_DECL(char *,
 #define get_datadir_fname_suffix(sub1, suffix) \
   get_datadir_fname2_suffix((sub1), NULL, (suffix))
 
+int using_default_dir_authorities(const or_options_t *options);
+
 int check_or_create_data_subdir(const char *subdir);
 int write_to_data_subdir(const char* subdir, const char* fname,
                          const char* str, const char* descr);
