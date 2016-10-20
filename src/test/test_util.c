@@ -1671,7 +1671,6 @@ test_util_config_line_crlf(void *arg)
   tor_free(k); tor_free(v);
 }
 
-
 #ifndef _WIN32
 static void
 test_util_expand_filename(void *arg)
@@ -5128,7 +5127,7 @@ test_util_socket(void *arg)
     tor_close_socket__real(fd4);
 }
 
-#ifdef __FreeBSD__
+#if 0
 static int
 is_there_a_localhost(int family)
 {
@@ -5180,7 +5179,7 @@ test_util_socketpair(void *arg)
    * Otherwise, we risk exposing a socketpair on a routable IP address. (Some
    * BSD jails use a routable address for localhost. Fortunately, they have
    * the real AF_UNIX socketpair.) */
-  if (ersatz && socketpair_result < 0 && !is_there_a_localhost(AF_INET)) {
+  if (ersatz && socketpair_result < 0) {
     /* In my testing, an IPv6-only FreeBSD jail without ::1 returned EINVAL.
      * Assume we're on a machine without 127.0.0.1 or ::1 and give up now. */
     tt_skip();

@@ -7,6 +7,51 @@
 /**
  * \file connection_edge.c
  * \brief Handle edge streams.
+ *
+ * An edge_connection_t is a subtype of a connection_t, and represents two
+ * critical concepts in Tor: a stream, and an edge connection.  From the Tor
+ * protocol's point of view, a stream is a bi-directional channel that is
+ * multiplexed on a single circuit.  Each stream on a circuit is identified
+ * with a separate 16-bit stream ID, local to the (circuit,exit) pair.
+ * Streams are created in response to client requests.
+ *
+ * An edge connection is one thing that can implement a stream: it is either a
+ * TCP application socket that has arrived via (e.g.) a SOCKS request, or an
+ * exit connection.
+ *
+ * Not every instance of edge_connection_t truly represents an edge connction,
+ * however. (Sorry!) We also create edge_connection_t objects for streams that
+ * we will not be handling with TCP.  The types of these streams are:
+ *   <ul>
+ *   <li>DNS lookup streams, created on the client side in response to
+ *     a UDP DNS request received on a DNSPort, or a RESOLVE command
+ *     on a controller.
+ *   <li>DNS lookup streams, created on the exit side in response to
+ *     a RELAY_RESOLVE cell from a client.
+ *   <li>Tunneled directory streams, created on the directory cache side
+ *     in response to a RELAY_BEGINDIR cell.  These streams attach directly
+ *     to a dir_connection_t object without ever using TCP.
+ *   </ul>
+ *
+ * This module handles general-purpose functionality having to do with
+ * edge_connection_t.  On the client side, it accepts various types of
+ * application requests on SocksPorts, TransPorts, and NATDPorts, and
+ * creates streams appropriately.
+ *
+ * This module is also responsible for implementing stream isolation:
+ * ensuring that streams that should not be linkable to one another are
+ * kept to different circuits.
+ *
+ * On the exit side, this module handles the various stream-creating
+ * type of RELAY cells by launching appropriate outgoing connections,
+ * DNS requests, or directory connection objects.
+ *
+ * And for all edge connections, this module is responsible for handling
+ * incoming and outdoing data as it arrives or leaves in the relay.c
+ * module.  (Outgoing data will be packaged in
+ * connection_edge_process_inbuf() as it calls
+ * connection_edge_package_raw_inbuf(); incoming data from RELAY_DATA
+ * cells is applied in connection_edge_process_relay_cell().)
  **/
 #define CONNECTION_EDGE_PRIVATE
 
@@ -2389,7 +2434,7 @@ connection_ap_handshake_send_begin(entry_connection_t *ap_conn)
      * Otherwise, directory connections are typically one-hop.
      * This matches the earlier check for directory connection path anonymity
      * in directory_initiate_command_rend(). */
-    if (is_sensitive_dir_purpose(linked_dir_conn_base->purpose)) {
+    if (purpose_needs_anonymity(linked_dir_conn_base->purpose, 0)) {
       assert_circ_anonymity_ok(circ, options);
     }
   } else {
@@ -3218,6 +3263,24 @@ connection_exit_begin_resolve(cell_t *cell, or_circuit_t *circ)
   return 0;
 }
 
+/** Helper: Return true and set *<b>why_rejected</b> to an optional clarifying
+ * message message iff we do not allow connections to <b>addr</b>:<b>port</b>.
+ */
+static int
+my_exit_policy_rejects(const tor_addr_t *addr,
+                       uint16_t port,
+                       const char **why_rejected)
+{
+  if (router_compare_to_my_exit_policy(addr, port)) {
+    *why_rejected = "";
+    return 1;
+  } else if (tor_addr_family(addr) == AF_INET6 && !get_options()->IPv6Exit) {
+    *why_rejected = " (IPv6 address without IPv6Exit configured)";
+    return 1;
+  }
+  return 0;
+}
+
 /** Connect to conn's specified addr and port. If it worked, conn
  * has now been added to the connection_array.
  *
@@ -3232,14 +3295,18 @@ connection_exit_connect(edge_connection_t *edge_conn)
   uint16_t port;
   connection_t *conn = TO_CONN(edge_conn);
   int socket_error = 0, result;
+  const char *why_failed_exit_policy = NULL;
 
-  if ( (!connection_edge_is_rendezvous_stream(edge_conn) &&
-        router_compare_to_my_exit_policy(&edge_conn->base_.addr,
-                                         edge_conn->base_.port)) ||
-       (tor_addr_family(&conn->addr) == AF_INET6 &&
-        ! get_options()->IPv6Exit)) {
-    log_info(LD_EXIT,"%s:%d failed exit policy. Closing.",
-             escaped_safe_str_client(conn->address), conn->port);
+  /* Apply exit policy to non-rendezvous connections. */
+  if (! connection_edge_is_rendezvous_stream(edge_conn) &&
+      my_exit_policy_rejects(&edge_conn->base_.addr,
+                             edge_conn->base_.port,
+                             &why_failed_exit_policy)) {
+    if (BUG(!why_failed_exit_policy))
+      why_failed_exit_policy = "";
+    log_info(LD_EXIT,"%s:%d failed exit policy%s. Closing.",
+             escaped_safe_str_client(conn->address), conn->port,
+             why_failed_exit_policy);
     connection_edge_end(edge_conn, END_STREAM_REASON_EXITPOLICY);
     circuit_detach_stream(circuit_get_by_edge_conn(edge_conn), edge_conn);
     connection_free(conn);
